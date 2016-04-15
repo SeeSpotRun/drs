@@ -1,7 +1,7 @@
 # drs
 coming soon... `drs` is a golang package to speed up reading from hard disk drives
 
-![no, not this drs...](http://www.formula1-dictionary.net/Images/ddrs_side_path.jpg)
+![drs](https://github.com/SeeSpotRun/drs/blob/master/doc/DiskReadScheduler.png)
 
 No more disk thrashing when reading large numbers of files from your HDD.
 No more "too many open files" when reading from an SSD.
