@@ -41,10 +41,8 @@ func offsetof(f *os.File, logical uint64) (uint64, error) {
 		}
 		// get result from first extent with adjustment for logical position relative to start of extent
 		return extents[0].Physical + logical - extents[0].Logical, nil
-	} else {
-		return 0, errno // converts errno to go err
 	}
-
+	return 0, errno // converts errno to go err
 }
 
 // not used in linux

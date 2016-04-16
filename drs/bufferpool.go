@@ -3,14 +3,14 @@ package drs
 // this file provides the Bufferpool implementation
 
 import (
-	"errors"
 	"fmt"
 	"runtime"
 )
 
-type buf []byte
+// Buf is a reusable byte buffer
+type Buf []byte
 
-var bufc chan buf
+var bufc chan Buf
 var reqc chan Token
 var nbufs int
 
@@ -21,7 +21,7 @@ func InitPool(bufsize int, maxbufs int) {
 	if bufc != nil {
 		panic("hddreader/InitPool: Attempt to re-init pool")
 	}
-	bufc = make(chan (buf), maxbufs)
+	bufc = make(chan (Buf), maxbufs)
 	reqc = make(chan (Token))
 
 	go func() {
@@ -29,14 +29,14 @@ func InitPool(bufsize int, maxbufs int) {
 		for range reqc {
 			if nbufs < maxbufs {
 				nbufs++
-				bufc <- make(buf, bufsize)
+				bufc <- make(Buf, bufsize)
 			}
 		}
 	}()
 }
 
 // GetBuf gets a buffer from the pool
-func GetBuf() buf {
+func GetBuf() Buf {
 	select {
 	case b := <-bufc:
 		// recycled buffer
@@ -50,7 +50,7 @@ func GetBuf() buf {
 }
 
 // PutBuf returns a buffer to the pool
-func PutBuf(b buf) {
+func PutBuf(b Buf) {
 	select {
 	// note: b is expanded to cap(b) before returning
 	case bufc <- b[:cap(b)]: // should not block
@@ -59,7 +59,7 @@ func PutBuf(b buf) {
 	}
 }
 
-// close closes the Bufferpool and returns the number of buffers used
+// ClosePool closes the Bufferpool and returns the number of buffers used
 func ClosePool() (used int, err error) {
 	close(reqc)
 	close(bufc)
@@ -69,7 +69,7 @@ func ClosePool() (used int, err error) {
 	}
 	runtime.GC()
 	if used != nbufs {
-		err = errors.New(fmt.Sprintf("Expected %d buffers, got %d", nbufs, used))
+		err = fmt.Errorf("Expected %d buffers, got %d", nbufs, used)
 	}
 	return
 }

@@ -64,7 +64,7 @@ var hashtypes []crypto.Hash
 
 const defaulthash = crypto.SHA1
 
-var hashnames []string = []string{
+var hashnames = []string{
 	crypto.MD4:        "MD4",        // import golang.org/x/crypto/md4crypto.MD4
 	crypto.MD5:        "MD5",        // import crypto/md5ypto.MD5
 	crypto.SHA1:       "SHA1",       // import crypto/sha1ypto.SHA1

@@ -28,7 +28,7 @@ import (
 	"os"
 )
 
-// offsetf returns the physical offset (relative to disk start) of
+// OffsetF returns the physical offset (relative to disk start) of
 // the data at the specified relative position in an open file
 func OffsetF(f *os.File, seek int64, whence int) (physical uint64, logical uint64, size int64, err error) {
 
@@ -61,7 +61,7 @@ func OffsetF(f *os.File, seek int64, whence int) (physical uint64, logical uint6
 	return
 }
 
-// offset returns the physical offset (relative to disk start) of
+// OffsetOf returns the physical offset (relative to disk start) of
 // the data at the specified position within a file associated with a path
 func OffsetOf(path string, seek int64, whence int) (physical uint64, logical uint64, size int64, err error) {
 	f, err := os.Open(path)

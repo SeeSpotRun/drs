@@ -150,9 +150,9 @@ func (d *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int64, 
 	nJobs := 0    // number jobs (goroutines) still running
 	donech := make(chan (Token))
 
-	var offset uint64 = 0 // estimate of current disk head position
+	var offset uint64 // estimate of current disk head position
 
-	var alljobs jobqueues = make(jobqueues, PriorityCount)
+	alljobs := make(jobqueues, PriorityCount)
 	//for i:=0; i < int(PriorityCount); i++ {
 	//	alljobs = append(alljobs, &jobqueue{})
 	//}
@@ -231,13 +231,14 @@ func (d *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int64, 
 	}
 
 	// main scheduler loop:
+sched:
 	for {
 		select {
 		case r := <-d.reqch:
 			// request to read data from f
 			if r == nil {
 				// channel closed; we are done!
-				break
+				break sched
 			}
 
 			// append to unsorted reqs:
@@ -273,7 +274,7 @@ func (d *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int64, 
 
 }
 
-// Jon is the interface for the calling routine to process files scheduled for reading.
+// Job is the interface for the calling routine to process files scheduled for reading.
 type Job interface {
 	// Go is called by drs as a goroutine.  As soon as it has finished reading file
 	// data, it should close the files and send read <- Token{}.  It can then continue
@@ -281,6 +282,8 @@ type Job interface {
 	Go(read chan<- Token)
 }
 
+// Priority can be used to prioritise jobs.  No lower priority jobs will be processed
+// until all higher priority jobs are done.
 type Priority int
 
 const (
@@ -316,7 +319,7 @@ func (d *Disk) Schedule(j Job, o uint64, p Priority) {
 func CopyN(dst io.Writer, src *os.File, n int64, read chan<- Token) (written int64, err error) {
 
 	var werr error                            // last error during writing
-	ch := make(chan (buf), defaultBufPerFile) // TODO: revisit buffer count
+	ch := make(chan (Buf), defaultBufPerFile) // TODO: revisit buffer count
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -386,7 +389,7 @@ func Copy(dst io.Writer, src *os.File, read chan<- Token) (written int64, err er
 	return CopyN(dst, src, maxInt64, read)
 }
 
-// Closes process all pending requests and then closes the disk scheduler
+// Close process all pending requests and then closes the disk scheduler
 // and frees buffer memory.
 func (d *Disk) Close() {
 	// TODO: wait for pending

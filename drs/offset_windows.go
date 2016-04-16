@@ -121,11 +121,9 @@ func bps(path string) (result uint64) {
 
 	if r1 == 0 {
 		if e1 != 0 {
-			err = error(e1)
-			log.Println("Syscall6, e1:", err)
+			log.Println("Syscall6, e1:", error(e1))
 		} else {
 			log.Println("Syscall6:", syscall.EINVAL)
-			err = syscall.EINVAL
 		}
 		return
 	}
