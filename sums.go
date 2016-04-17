@@ -85,11 +85,6 @@ var hashnames = []string{
 type options struct {
 	cpuprofile string
 	procs      int
-	read       int
-	process    int
-	window     int
-	ahead      int64
-	behind     int64
 	buffer     int
 	path       []string
 	maxsize    int64
@@ -99,6 +94,8 @@ type options struct {
 	recurse    bool
 	limit      int64
 	ls         bool
+	SSD        bool
+	HDD        bool
 }
 
 // (cough) globals
@@ -170,6 +167,9 @@ Options:
   -h --help      Show this screen
   --version      Show version
   --limit=N      Only hash the first N bytes of each file
+  --SSD          Use SSD defaults
+  --HDD          Use HDD defaults
+  --Custom       Use custom drs settings
 Walk options:
   -r --recurse   Recurse paths if they are folders
   --hidden       Include hidden files and folders
@@ -181,14 +181,14 @@ System options:
   -p --procs=N   Limit number of simultaneous processes (defaults to NumCPU)
   --cpuprofile=<file>  Write cpu profile to file
   --open=N       Limit number of open file handles to N [default: 10]
-HDD options:
-  --read=N       Limit number of files reading simultaneously [default: 1]
-  --process=N    Limit number of files processing [default: 0]
-  --ahead=<kB>   Files within this many kB ahead of disk head ignore 'read' limit [default: 1024]
-  --behind=<kB>  Files within this many kB behind disk head ignore 'read' limit [default: 0]
-  --window=N     Limit number of ahead/behind file exceptions [default: 5]
-  --handles=N    Limit number of open file handles to N [default: 100]
-  --buffer=<kB>  Use a bufferpool to buffer disk reads
+  --buffer=N     Set bufferpool size limit (No of 32k buffers) [default: 1024]
+Custom drs options:
+  --Read=N       Limit number of files reading simultaneously [default: 1]
+  --Process=N    Limit number of files processing [default: 0]
+  --Ahead=N      Files within this many bytes ahead of disk head ignore 'read' limit [default: 1048576]
+  --Behind=N     Files within this many bytse behind disk head ignore 'read' limit [default: 0]
+  --Window=N     Limit number of ahead/behind file exceptions [default: 5]
+  --Lazy=N       Sets sort laziness [default: 1.0]
 `
 	useHash := `Hashtype options:
 `
@@ -250,7 +250,26 @@ HDD options:
 		runtime.GOMAXPROCS(runtime.NumCPU())
 	}
 
-	disk := drs.NewDisk(opts.read, opts.window, opts.ahead*1024, opts.behind*1024, opts.process, opts.buffer)
+	var diskconfig drs.DiskConfig
+	err = coerce.Struct(&diskconfig, args, "--%s")
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Println(diskconfig)
+
+	if opts.SSD {
+		diskconfig = drs.SSD
+	}
+	if opts.HDD {
+		diskconfig = drs.HDD
+	}
+
+	drs.InitPool(32*1024, opts.buffer)
+	disk := drs.NewDisk(diskconfig)
+
+	if opts.whilewalk {
+		disk.Start(0)
+	}
 
 	// set up for walk...
 	walkopts := walk.Defaults
@@ -293,6 +312,9 @@ HDD options:
 	log.Println("Walk done")
 
 	disk.Start(0)
+	if !opts.whilewalk {
+		disk.Start(0)
+	}
 	wg.Wait()
 	disk.Close()
 

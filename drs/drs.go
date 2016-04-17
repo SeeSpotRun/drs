@@ -44,14 +44,50 @@ import (
 	"io"
 	"log"
 	"os"
+	"runtime"
 	"sort"
 	"sync"
 )
 
+type DiskConfig struct {
+	Read    int
+	Window  int
+	Process int
+	Ahead   int64
+	Behind  int64
+	Lazy    float32
+}
+
+var HDD = DiskConfig{
+	Read:    1,
+	Window:  0,
+	Process: 3 + runtime.NumCPU(),
+	Ahead:   0,
+	Behind:  0,
+	Lazy:    0.5,
+}
+
+var Aggressive = DiskConfig{
+	Read:    2,
+	Window:  10,
+	Process: 20 + runtime.NumCPU(),
+	Ahead:   2 * 1024 * 1024,
+	Behind:  512 * 1024,
+	Lazy:    1.0,
+}
+
+var SSD = DiskConfig{
+	Read:    runtime.NumCPU() * 2,
+	Window:  0,
+	Process: runtime.NumCPU() * 4,
+	Ahead:   0,
+	Behind:  0,
+	Lazy:    -1.0,
+}
+
 const (
-	defaultMaxRead   = 1  // number of files simultaneously reading
-	defaultMaxOpen   = 50 // number of file.File's simultaneously open
-	defaultMaxWindow = 5  // number of file.File's simultaneously reading under ahead/behind clause
+	defaultMaxRead   = 1 // number of files simultaneously reading
+	defaultMaxWindow = 5 // number of file.File's simultaneously reading under ahead/behind clause
 	// https://www.usenix.org/legacy/event/usenix09/tech/full_papers/vandebogart/vandebogart_html/index.html
 	// suggests a window of opportunity for quick seeks in the +/- 0.5 MB range.  This article is
 	// from Proc. USENIX (2009) when typical hard drive size was around 1TB; scaling to 4TB
@@ -62,7 +98,6 @@ const (
 	defaultBufSize    = 32 * 1024 // for buffering file.WriteTo() calls
 	defaultBufCount   = 1024      // max number of buffers total
 	defaultBufPerFile = 10        // number of buffers per file
-	defaultLazy       = 1.0
 )
 
 // Token is a convenience type for signalling channels
@@ -83,11 +118,11 @@ type Token struct{}
 //  wg.Wait()
 //  d.Close()
 type Disk struct {
-	reqch   chan *request // read job requests
-	readch  chan Token    // signal that read job has finished reading and file has been closed
-	donech  chan Token    // signal that read job has finished
-	startch chan Token    // used by disk.Start() to signal start of reading
-	wait    int           // how many pending reads to wait for before starting first read
+	reqch   chan *request   // read job requests
+	readch  chan Token      // signal that read job has finished reading and file has been closed
+	donech  chan Token      // signal that read job has finished
+	startch chan Token      // used by disk.Start() to signal start of reading
+	wait    int             // how many pending reads to wait for before starting first read
 }
 
 // NewDisk creates a new disk object to schedule read operations in order of increasing
@@ -101,37 +136,29 @@ type Disk struct {
 // If bufkB > 0 then an internal buffer pool is created to buffer WriteTo() calls.  Note that while
 // read order is preserved, buffering may change the order in which WriteTo(w) calls complete, depending
 // on speed at which buffers are written to w.
-func NewDisk(maxread int, maxwindow int, ahead int64, behind int64, maxgo int, bufkB int) *Disk {
+func NewDisk(config DiskConfig) *Disk {
 
-	if maxread < 1 {
-		maxread = defaultMaxRead
-	}
-	if maxwindow < 0 {
-		maxwindow = defaultMaxWindow
-	}
-	if maxgo < 1 {
-		maxgo = 2 * (maxread + maxwindow)
+	if config.Read < 1 {
+		panic("Need config.Read > 0")
 	}
 
-	if ahead < 0 {
-		ahead = defaultAhead
-	}
-	if behind < 0 {
-		behind = defaultBehind
+	if config.Process < 1 {
+		config.Process = config.Read + config.Window + runtime.NumCPU()
 	}
 
 	d := &Disk{
 		startch: make(chan (Token)),
 		reqch:   make(chan (*request)),
-		readch:  make(chan (Token), 1000), // TODO: does buffer improve speed?
+		readch:  make(chan (Token), 10), // TODO: does buffer improve speed?
 	}
 
-	if bufkB > 0 {
-		InitPool(defaultBufSize, 1+(bufkB*1024-1)/defaultBufSize)
+	//TODO: this is a bit hacky
+	if bufc == nil {
+		InitPool(defaultBufSize, defaultBufCount)
 	}
 
 	// start scheduler to prioritise Read() calls
-	go d.scheduler(maxread, maxwindow, ahead, behind, maxgo)
+	go d.scheduler(config)
 
 	return d
 }
@@ -144,7 +171,7 @@ func (d *Disk) Start(wait int) {
 }
 
 // scheduler manages job requests and tries to process jobs in disk order
-func (d *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int64, maxgo int) {
+func (d *Disk) scheduler(config DiskConfig) {
 
 	nReading := 0 // number jobs reading from disk
 	nJobs := 0    // number jobs (goroutines) still running
@@ -169,16 +196,19 @@ func (d *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int64, 
 		}
 		d.wait = 0
 		for iq := range alljobs {
-			for alljobs[iq].Len() > 0 && nReading < maxread+maxwindow {
+			for alljobs[iq].Len() > 0 && nReading < config.Read+config.Window {
 
-				alljobs[iq].lazySort(defaultLazy)
+				alljobs[iq].lazySort(config.Lazy)
 
 				// find last file that is at-or-ahead of the disk head position
 				// note files are sorted in reverse offset order
 				if len(alljobs[iq].s) == 0 {
 					panic("zero length sorted queue")
 				}
-				i := sort.Search(len(alljobs[iq].s), func(i int) bool { return alljobs[iq].s[i].o < offset }) - 1
+				i := len(alljobs[iq].s) - 1
+				if config.Lazy >= 0 {
+					i = sort.Search(len(alljobs[iq].s), func(i int) bool { return alljobs[iq].s[i].o < offset }) - 1
+				}
 
 				// launch() launches job i from the sorted queue
 				launch := func(i int) {
@@ -187,7 +217,7 @@ func (d *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int64, 
 					nJobs++
 					// register the new disk offset
 					// note: jobs under the ahead/behind window clause don't reset offset
-					if nReading <= maxread {
+					if nReading <= config.Read {
 						offset = r.o
 					}
 					go func() {
@@ -204,17 +234,17 @@ func (d *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int64, 
 
 				// release best match...
 
-				if i < 0 { // all file are behind current offset
+				if i == -1 { // all file are behind current offset
 					i = 0
 				}
 
-				if gap(i) >= 0 && gap(i) <= ahead {
+				if gap(i) >= 0 && gap(i) <= config.Ahead {
 					// found a job in ahead window; release it
 					launch(i)
-				} else if i+1 < len(alljobs[iq].s) && gap(i+1) <= 0 && gap(i+1) >= -behind {
+				} else if i+1 < len(alljobs[iq].s) && gap(i+1) <= 0 && gap(i+1) >= -config.Behind {
 					// found a job in behind window; release it
 					launch(i + 1)
-				} else if gap(i) >= 0 && nReading < maxread {
+				} else if gap(i) >= 0 && nReading < config.Read {
 					// no jobs in ahead/behind window, but next job is ahead of disk head
 					launch(i)
 				} else {
@@ -255,7 +285,7 @@ sched:
 		case <-d.readch:
 			// a job has finished reading; launch pending jobs as appropriate
 			nReading--
-			if nJobs < maxgo {
+			if nJobs < config.Process {
 				release()
 			}
 
@@ -429,7 +459,6 @@ type jobqueue struct {
 // Add adds a job to the unsorted list
 func (j *jobqueue) Add(r *request) {
 	j.u = append(j.u, r)
-	j.lazySort(10)
 }
 
 // Len returns total jobqueue length
@@ -450,7 +479,12 @@ func (j *jobqueue) Pop(i int) *request {
 // LazySort waits until there are enough unsorted jobs relative to sorted jobs,
 // then does a sort.  Trigger is when len(unsorted) >= len(sorted) * laziness.
 func (j *jobqueue) lazySort(laziness float32) {
-	if len(j.u) >= int(laziness*float32(len(j.s))) {
+	if laziness < 0 {
+		if len(j.u) > 0 {
+			j.s = append(j.s, j.u...)
+			j.u = nil
+		}
+	} else if len(j.u) >= int(laziness*float32(len(j.s))) {
 		j.Sort()
 	}
 }
