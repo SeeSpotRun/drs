@@ -103,6 +103,14 @@ const (
 // Token is a convenience type for signalling channels
 type Token struct{}
 
+type TokenReturn chan<- Token
+
+func (t TokenReturn) Done() {
+	if t != nil {
+		t <- Token{}
+	}
+}
+
 // A Disk schedules read operations for files.  It shoulds be created using NewDisk.  A call
 // to Disk.Start() is required before the disk will allow associated files to start
 // reading data.
@@ -195,6 +203,8 @@ func (d *Disk) scheduler(config DiskConfig) {
 			return
 		}
 		d.wait = 0
+
+
 		for iq := range alljobs {
 			for alljobs[iq].Len() > 0 && nReading < config.Read+config.Window {
 
@@ -233,7 +243,6 @@ func (d *Disk) scheduler(config DiskConfig) {
 				}
 
 				// release best match...
-
 				if i == -1 { // all file are behind current offset
 					i = 0
 				}
@@ -293,6 +302,7 @@ sched:
 			log.Println("Disk start")
 			started = true
 			release()
+
 		}
 	}
 
@@ -309,7 +319,7 @@ type Job interface {
 	// Go is called by drs as a goroutine.  As soon as it has finished reading file
 	// data, it should close the files and send read <- Token{}.  It can then continue
 	// on with other tasks (eg processing the data).
-	Go(read chan<- Token)
+	Go(read TokenReturn)
 }
 
 // Priority can be used to prioritise jobs.  No lower priority jobs will be processed
@@ -317,6 +327,7 @@ type Job interface {
 type Priority int
 
 const (
+	// High is the highest priority
 	High Priority = iota
 	Normal
 	Low
@@ -346,7 +357,7 @@ func (d *Disk) Schedule(j Job, o uint64, p Priority) {
 // It returns the number of bytes copied and the earliest error
 // encountered while copying.  On return, written == n if
 // only if err == nil.
-func CopyN(dst io.Writer, src *os.File, n int64, read chan<- Token) (written int64, err error) {
+func CopyN(dst io.Writer, src *os.File, n int64, read TokenReturn) (written int64, err error) {
 
 	var werr error                            // last error during writing
 	ch := make(chan (Buf), defaultBufPerFile) // TODO: revisit buffer count
@@ -390,8 +401,8 @@ func CopyN(dst io.Writer, src *os.File, n int64, read chan<- Token) (written int
 		err = er
 	}
 	src.Close()
+	read.Done()
 	close(ch)
-	read <- Token{}
 	wg.Wait()
 
 	if err == nil {
