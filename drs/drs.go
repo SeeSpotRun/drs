@@ -131,6 +131,11 @@ type Disk struct {
 	donech  chan Token      // signal that read job has finished
 	startch chan Token      // used by disk.Start() to signal start of reading
 	wait    int             // how many pending reads to wait for before starting first read
+	closech chan Token      // to signal disk close
+	wg      sync.WaitGroup  // when closing disk, to wait for pending jobs to finish
+	dirs    map[node]string // used to check for path walk recursion
+	mx      sync.Mutex      // for access to dirs
+	ssd     bool
 }
 
 // NewDisk creates a new disk object to schedule read operations in order of increasing
@@ -158,6 +163,8 @@ func NewDisk(config DiskConfig) *Disk {
 		startch: make(chan (Token)),
 		reqch:   make(chan (*request)),
 		readch:  make(chan (Token), 10), // TODO: does buffer improve speed?
+		closech: make(chan (Token)),
+		dirs:    make(map[node]string),
 	}
 
 	//TODO: this is a bit hacky
@@ -184,6 +191,7 @@ func (d *Disk) scheduler(config DiskConfig) {
 	nReading := 0 // number jobs reading from disk
 	nJobs := 0    // number jobs (goroutines) still running
 	donech := make(chan (Token))
+	finishing := false
 
 	var offset uint64 // estimate of current disk head position
 
@@ -204,6 +212,9 @@ func (d *Disk) scheduler(config DiskConfig) {
 		}
 		d.wait = 0
 
+		if finishing && nJobs == 0 && alljobs.Len() == 0 {
+			d.wg.Done()
+		}
 
 		for iq := range alljobs {
 			for alljobs[iq].Len() > 0 && nReading < config.Read+config.Window {
@@ -303,6 +314,10 @@ sched:
 			started = true
 			release()
 
+		case <-d.closech:
+			log.Println("Disk closing...")
+			finishing = true
+			release()
 		}
 	}
 
@@ -312,6 +327,18 @@ sched:
 		log.Printf("Unprocessed jobs: %d\n", alljobs.Len())
 	}
 
+}
+
+// AddDir checks for the presence of a dir in d.dirs.  If notfound
+// then adds it and returns true, else returns false.
+func (d *Disk) AddDir(n node, path string) bool {
+	d.mx.Lock()
+	defer d.mx.Unlock()
+	if _, ok := d.dirs[n]; ok {
+		return false
+	}
+	d.dirs[n] = path
+	return true
 }
 
 // Job is the interface for the calling routine to process files scheduled for reading.
@@ -435,6 +462,9 @@ func Copy(dst io.Writer, src *os.File, read chan<- Token) (written int64, err er
 func (d *Disk) Close() {
 	// TODO: wait for pending
 	// close bufpool
+	d.wg.Add(1)
+	d.closech <- Token{}
+	d.wg.Wait()
 	if bufc != nil {
 		n, err := ClosePool()
 		// TODO: clean up debug logging
