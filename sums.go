@@ -49,6 +49,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/pprof"
+	"sort"
 	"sync"
 	"time"
 	//
@@ -96,6 +97,7 @@ type options struct {
 	ls         bool
 	SSD        bool
 	HDD        bool
+	nodrs      int
 }
 
 // (cough) globals
@@ -111,13 +113,22 @@ type job struct {
 	offset uint64
 }
 
+// implements sort.Interface for sorting by decreasing Offset.
+type jobs []*job
+
+func (j jobs) Len() int           { return len(j) }
+func (j jobs) Swap(i, k int)      { j[i], j[k] = j[k], j[i] }
+func (j jobs) Less(i, k int) bool { return j[k].offset > j[i].offset }
+
 // Go opens the file, reads its contents, signals done, hashes the
 // contents and prints the results
 func (j *job) Go(read chan<- drs.Token) {
 	defer wg.Done()
 	f, err := os.Open(j.path)
 	if err != nil {
-		read <- drs.Token{}
+		if read != nil {
+			read <- drs.Token{}
+		}
 		log.Println(err)
 		return
 	}
@@ -167,6 +178,7 @@ Options:
   -h --help      Show this screen
   --version      Show version
   --limit=N      Only hash the first N bytes of each file
+  --nodrs=<opt>  Disable drs; opt 1 hashes as walked, 2 go hashes while walked, 3 sorts by offset then hashes, 4 as per 3 but go hashes
   --SSD          Use SSD defaults
   --HDD          Use HDD defaults
   --Custom       Use custom drs settings
@@ -202,6 +214,7 @@ Custom drs options:
 
 	// parse args
 	args, err := docopt.Parse(usage+useOptions+useHash, os.Args[1:], false, "sums 0.1", false, false)
+	fmt.Println(args)
 	if err != nil || args["--help"] == true {
 		fmt.Println(useOptions + useHash)
 		return
@@ -288,6 +301,13 @@ Custom drs options:
 		}
 	}()
 
+	// job list and ticket system for nodrs options:
+	var js jobs
+	tickets := make(chan (drs.Token), diskconfig.Read)
+	for i := 0; i < diskconfig.Read; i++ {
+		tickets <- drs.Token{}
+	}
+
 	// do the actual walk
 	for f := range walk.FileCh(nil, errc, opts.path, walkopts) {
 		// filter based on size
@@ -302,16 +322,39 @@ Custom drs options:
 			fmt.Println(f.Path)
 		} else {
 			j := &job{path: f.Path}
-			j.offset, _, _, _ = drs.OffsetOf(j.path, 0, os.SEEK_SET)
 			wg.Add(1)
-			disk.Schedule(j, j.offset, drs.Normal)
+			if opts.nodrs == 1 {
+				j.Go(nil)
+			} else if opts.nodrs == 2 {
+				<-tickets
+				go j.Go(tickets)
+			} else {
+				j.offset, _, _, _ = drs.OffsetOf(j.path, 0, os.SEEK_SET)
+				if opts.nodrs >= 3 {
+					js = append(js, j)
+				} else {
+					disk.Schedule(j, j.offset, drs.Normal)
+				}
+			}
 		}
 	}
 
 	close(errc)
 	log.Println("Walk done")
 
-	disk.Start(0)
+	if opts.nodrs >= 3 {
+
+		sort.Sort(jobs(js))
+		for _, j := range js {
+			if opts.nodrs == 3 {
+				j.Go(nil)
+			} else {
+				<-tickets
+				go j.Go(tickets)
+			}
+		}
+	}
+
 	if !opts.whilewalk {
 		disk.Start(0)
 	}
