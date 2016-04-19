@@ -47,6 +47,7 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+	"fmt"
 )
 
 type DiskConfig struct {
@@ -103,7 +104,7 @@ const (
 // Token is a convenience type for signalling channels
 type Token struct{}
 
-type TokenReturn chan<- Token
+type TokenReturn chan Token
 
 func (t TokenReturn) Done() {
 	if t != nil {
@@ -127,13 +128,13 @@ func (t TokenReturn) Done() {
 //  d.Close()
 type Disk struct {
 	reqch   chan *request   // read job requests
-	readch  chan Token      // signal that read job has finished reading and file has been closed
-	donech  chan Token      // signal that read job has finished
-	startch chan Token      // used by disk.Start() to signal start of reading
+	readch  TokenReturn     // signal that read job has finished reading and file has been closed
+	donech  TokenReturn     // signal that read job has finished
+	startch TokenReturn     // used by disk.Start() to signal start of reading
 	wait    int             // how many pending reads to wait for before starting first read
-	closech chan Token      // to signal disk close
+	closech TokenReturn     // to signal disk close
 	wg      sync.WaitGroup  // when closing disk, to wait for pending jobs to finish
-	dirs    map[node]string // used to check for path walk recursion
+	dirs    map[id]string   // used to check for path walk recursion
 	mx      sync.Mutex      // for access to dirs
 	ssd     bool
 }
@@ -160,11 +161,12 @@ func NewDisk(config DiskConfig) *Disk {
 	}
 
 	d := &Disk{
-		startch: make(chan (Token)),
+		startch: make(TokenReturn),
 		reqch:   make(chan (*request)),
 		readch:  make(chan (Token), 10), // TODO: does buffer improve speed?
 		closech: make(chan (Token)),
-		dirs:    make(map[node]string),
+		donech:  make(chan (Token)),
+		dirs:    make(map[id]string),
 	}
 
 	//TODO: this is a bit hacky
@@ -185,12 +187,39 @@ func (d *Disk) Start(wait int) {
 	d.startch <- Token{}
 }
 
+// File wraps an os.File object with a custom Close() command
+type File struct {
+        *os.File
+	disk    *Disk
+        closed  bool
+}
+
+func (f *File) Close() error {
+        if !f.closed {
+                f.closed = true
+		f.disk.readch <- Token{}
+                return f.File.Close()
+        }
+        return fmt.Errorf("Warning: attempt to close a closed file")
+}
+
+func (r *request) Do(d *Disk) {
+        f, e := os.Open(r.path)
+	fi := &File{ f, d, e != nil }
+	if e != nil {
+		// signal finished reading
+		fi.disk.readch <- Token{}
+	}
+	r.job.Go(fi, e)
+	d.donech.Done()
+}
+
+
 // scheduler manages job requests and tries to process jobs in disk order
 func (d *Disk) scheduler(config DiskConfig) {
 
 	nReading := 0 // number jobs reading from disk
 	nJobs := 0    // number jobs (goroutines) still running
-	donech := make(chan (Token))
 	finishing := false
 
 	var offset uint64 // estimate of current disk head position
@@ -228,7 +257,7 @@ func (d *Disk) scheduler(config DiskConfig) {
 				}
 				i := len(alljobs[iq].s) - 1
 				if config.Lazy >= 0 {
-					i = sort.Search(len(alljobs[iq].s), func(i int) bool { return alljobs[iq].s[i].o < offset }) - 1
+					i = sort.Search(len(alljobs[iq].s), func(i int) bool { return alljobs[iq].s[i].offset < offset }) - 1
 				}
 
 				// launch() launches job i from the sorted queue
@@ -239,18 +268,14 @@ func (d *Disk) scheduler(config DiskConfig) {
 					// register the new disk offset
 					// note: jobs under the ahead/behind window clause don't reset offset
 					if nReading <= config.Read {
-						offset = r.o
+						offset = r.offset
 					}
-					go func() {
-						r.j.Go(d.readch)
-						donech <- Token{}
-					}()
-
+                                        go r.Do(d)
 				}
 
 				// gap returns the seek gap from current head position to file i
 				gap := func(i int) int64 {
-					return int64(alljobs[iq].s[i].o) - int64(offset)
+					return int64(alljobs[iq].s[i].offset) - int64(offset)
 				}
 
 				// release best match...
@@ -292,12 +317,12 @@ sched:
 			}
 
 			// append to unsorted reqs:
-			alljobs[r.p].Add(r)
+			alljobs[r.priority].Add(r)
 
 			// launch this (or other pending) job(s) as appropriate
 			release()
 
-		case <-donech:
+		case <-d.donech:
 			// a job's goroutine has finished reading; launch pending jobs as appropriate
 			nJobs--
 			release()
@@ -331,14 +356,15 @@ sched:
 
 // AddDir checks for the presence of a dir in d.dirs.  If notfound
 // then adds it and returns true, else returns false.
-func (d *Disk) AddDir(n node, path string) bool {
+func (d *Disk) AddDir(i id, path string) error {
 	d.mx.Lock()
 	defer d.mx.Unlock()
-	if _, ok := d.dirs[n]; ok {
-		return false
+	match, has_match := d.dirs[i]
+	if has_match {
+		return fmt.Errorf("Duplicate dir: %s is same as %s", path, match)
 	}
-	d.dirs[n] = path
-	return true
+	d.dirs[i] = path
+	return nil
 }
 
 // Job is the interface for the calling routine to process files scheduled for reading.
@@ -346,7 +372,7 @@ type Job interface {
 	// Go is called by drs as a goroutine.  As soon as it has finished reading file
 	// data, it should close the files and send read <- Token{}.  It can then continue
 	// on with other tasks (eg processing the data).
-	Go(read TokenReturn)
+	Go(f *File, err error)
 }
 
 // Priority can be used to prioritise jobs.  No lower priority jobs will be processed
@@ -358,20 +384,20 @@ const (
 	High Priority = iota
 	Normal
 	Low
-
-	PriorityCount
+	PriorityCount // Sentinel
 )
 
 // request is used by drs to communicate with the scheduler goroutine
 type request struct {
-	j Job
-	o uint64
-	p Priority
+	job       Job
+        path      string
+	offset    uint64
+	priority  Priority
 }
 
 // Schedule adds a job to the disk's queue.
-func (d *Disk) Schedule(j Job, o uint64, p Priority) {
-	r := &request{j, o, p}
+func (d *Disk) Schedule(j Job, path string, offset uint64, priority Priority) {
+	r := &request{j, path, offset, priority}
 	d.reqch <- r
 }
 
@@ -384,7 +410,7 @@ func (d *Disk) Schedule(j Job, o uint64, p Priority) {
 // It returns the number of bytes copied and the earliest error
 // encountered while copying.  On return, written == n if
 // only if err == nil.
-func CopyN(dst io.Writer, src *os.File, n int64, read TokenReturn) (written int64, err error) {
+func CopyN(dst io.Writer, src *File, n int64) (written int64, err error) {
 
 	var werr error                            // last error during writing
 	ch := make(chan (Buf), defaultBufPerFile) // TODO: revisit buffer count
@@ -428,7 +454,6 @@ func CopyN(dst io.Writer, src *os.File, n int64, read TokenReturn) (written int6
 		err = er
 	}
 	src.Close()
-	read.Done()
 	close(ch)
 	wg.Wait()
 
@@ -451,10 +476,10 @@ func CopyN(dst io.Writer, src *os.File, n int64, read TokenReturn) (written int6
 //
 // Copy always uses src.Read() and dst.Write() so as to be able
 // to identify the end of reading.
-func Copy(dst io.Writer, src *os.File, read chan<- Token) (written int64, err error) {
+func Copy(dst io.Writer, src *File) (written int64, err error) {
 	const maxInt64 int64 = 1<<63 - 1
 
-	return CopyN(dst, src, maxInt64, read)
+	return CopyN(dst, src, maxInt64)
 }
 
 // Close process all pending requests and then closes the disk scheduler
@@ -485,9 +510,9 @@ type reqs []*request
 // implements sort.Interface for sorting by decreasing Offset.
 func (r reqs) Len() int           { return len(r) }
 func (r reqs) Swap(i, j int)      { r[i], r[j] = r[j], r[i] }
-func (r reqs) Less(i, j int) bool { return r[i].o > r[j].o }
+func (r reqs) Less(i, j int) bool { return r[i].offset > r[j].offset }
 
-func (r *request) Less(s *request) bool { return r.o > s.o }
+func (r *request) Less(s *request) bool { return r.offset > s.offset }
 
 // jobqueue is a lazily sorted queue.  Adds are faster than a sorted
 // insert, and sorting is fast because it takes advantage of items
