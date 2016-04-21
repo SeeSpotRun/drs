@@ -54,6 +54,7 @@ var disks = make(map[uint64]*Disk)
 var mx    sync.Mutex
 
 
+// GetDisk gets the disk corresponding to a diskID, creating one if necessary
 func GetDisk(id uint64, ssd bool) *Disk {
 	mx.Lock()
 	defer mx.Unlock()
@@ -66,9 +67,17 @@ func GetDisk(id uint64, ssd bool) *Disk {
 	return d
 }
 
+// CloseDisks closes all disks
 func CloseDisks() {
 	for _, d := range(disks) {
 		d.Close()
+	}
+}
+
+// WaitDisks waits until there are no unfinished scheduled jobs
+func WaitDisks() {
+	for _, d := range(disks) {
+		d.Wait()
 	}
 }
 
@@ -274,6 +283,7 @@ func (d *Disk) scheduler(config DiskConfig) {
 		d.wait = 0
 
 		if finishing && nJobs == 0 && alljobs.Len() == 0 {
+			finishing = false
 			d.wg.Done()
 		}
 
@@ -367,7 +377,7 @@ sched:
 			}
 
 		case <-d.startch:
-			log.Println("Disk start")
+			log.Println("Disk start; ssd:", d.ssd)
 			started = true
 			release()
 
@@ -514,13 +524,18 @@ func Copy(dst io.Writer, src *File) (written int64, err error) {
 	return CopyN(dst, src, maxInt64)
 }
 
-// Close process all pending requests and then closes the disk scheduler
-// and frees buffer memory.
-func (d *Disk) Close() {
-	// wait for pending jobs to finish
+
+// Wait waits until there are not unfinished or scheduled jobs.
+func (d *Disk) Wait() {
 	d.wg.Add(1)
 	d.closech <- Token{}
 	d.wg.Wait()
+}
+
+// Close process all pending requests and then closes the disk scheduler
+// and frees buffer memory.
+func (d *Disk) Close() {
+	d.Wait()
 	// close bufpool
 	if bufc != nil {
 		n, err := ClosePool()

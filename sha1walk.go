@@ -123,7 +123,8 @@ Options:
 		p.Disk.Schedule(j, j.path, j.offset, hashPriority)
 	}
 
-	drs.CloseDisks()
+	// wait for all jobs to finish
+	drs.WaitDisks()
 
 	if args["--sort"] == true {
 		sort.Sort(results(res))
