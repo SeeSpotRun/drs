@@ -223,6 +223,18 @@ func Walk( roots []string, opts *WalkOptions) <-chan *Path {
 	return results
 }
 
+func RegisterSSDs(roots []string) error {
+	for _, r:= range roots {
+		info, err := os.Lstat(r)
+		if err != nil {
+			return err
+		}
+		id, _ := getID(r, info)
+		GetDisk( id.Dev, true )
+	}
+	return nil
+}
+
 func fixpath(p string) (string, error) {
 	var err error
 	// clean path
