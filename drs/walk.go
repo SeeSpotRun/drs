@@ -34,37 +34,26 @@ import (
 	"sync"
 )
 
-// Option flags for walking; add to options to change default behaviour
-const (
-	Defaults = 0
-	// TODO: SeeRootLinks    = 1     // default: if root paths are symlinks they will be ignored
-	// TODO: SeeLinks        = 2     // default: all symlinks (except root links) will be ignored
-	// TODO: FollowLinks     = 4     // default: returns 'seen' symlinks as symlinks instead of following links
-	// TODO: SeeDotFiles     = 8     // default: ignores '.' and '..' dir entries TODO
-	HiddenDirs  = 16  // default: won't descend into folders starting with '.'
-	HiddenFiles = 32  // default: won't return files starting with '.'
-	ReturnDirs  = 64  // default: doesn't return dir paths (note: never returns root dirs)
-	NoRecurse   = 128 // default: walks subdirs recursively
-	//TODO: OneDevice       = 256   // default: walk will cross filesystem boundaries TODO
-)
-
 const winLongPathLimit = 259
 const winLongPathHack = "\\\\?\\" // workaround prefix for windows 260-character path limit
 
 type WalkOptions struct {
-	SeeRootLinks bool
-	SeeLinks     bool
-	FollowLinks  bool
-	SeeDotFiles  bool
-	HiddenDirs   bool
-	HiddenFiles  bool
-	ReturnDirs   bool
-	NoRecurse    bool
-	OneDevice    bool
-	MaxDepth     int
-	Errs         chan<- error
-	results      chan<- *Path
-	wg           sync.WaitGroup
+	SeeRootLinks bool  // if false, if root paths are symlinks they will be ignored
+	SeeLinks     bool  // if false, symlinks will be ignored (except root paths)
+	FollowLinks  bool  // if false, walk returns symlinks as symlinks; if true it returns their targets
+	SeeDotFiles  bool  // if false, ignores "." and ".." entries // TODO:
+	HiddenDirs   bool  // if false, won't descend into folders starting with '.'
+	HiddenFiles  bool  // if false, won't return files starting with '.'
+	ReturnDirs   bool  // if false, doesn't return dir paths
+	NoRecurse    bool  // if false, walks passed root dirs recursively
+	OneDevice    bool  // if false, walk will cross filesystem boundaries TODO
+	MaxDepth     int   // if recursing dirs, limit depth (1 = files in root dirs; 0 = no limit).
+	Priority     Priority   // drs schedule priority for walk takss
+	Errs         chan error // optional channel to return walk errors; if nil then ignores errors
+	results      chan<- *Path  // channel to which to send results
+	wg           sync.WaitGroup // waitgroup to signal end of walks
+}
+
 }
 
 // Path implements the drs.Job interface
