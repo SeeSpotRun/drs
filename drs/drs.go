@@ -50,6 +50,29 @@ import (
 	"fmt"
 )
 
+var disks = make(map[uint64]*Disk)
+var mx    sync.Mutex
+
+
+func GetDisk(id uint64, ssd bool) *Disk {
+	mx.Lock()
+	defer mx.Unlock()
+	if d, ok := disks[id]; ok {
+		return d
+	}
+	d := NewDisk(ssd)
+	disks[id] = d
+	d.Start(0)
+	return d
+}
+
+func CloseDisks() {
+	for _, d := range(disks) {
+		d.Close()
+	}
+}
+
+
 type DiskConfig struct {
 	Read    int
 	Window  int
@@ -112,6 +135,8 @@ func (t TokenReturn) Done() {
 	}
 }
 
+
+
 // A Disk schedules read operations for files.  It shoulds be created using NewDisk.  A call
 // to Disk.Start() is required before the disk will allow associated files to start
 // reading data.
@@ -139,6 +164,8 @@ type Disk struct {
 	ssd     bool
 }
 
+
+
 // NewDisk creates a new disk object to schedule read operations in order of increasing
 // physical offset on the disk.
 //
@@ -150,7 +177,11 @@ type Disk struct {
 // If bufkB > 0 then an internal buffer pool is created to buffer WriteTo() calls.  Note that while
 // read order is preserved, buffering may change the order in which WriteTo(w) calls complete, depending
 // on speed at which buffers are written to w.
-func NewDisk(config DiskConfig) *Disk {
+func NewDisk(ssd bool) *Disk {
+	config := HDD
+	if ssd {
+		config = SSD
+	}
 
 	if config.Read < 1 {
 		panic("Need config.Read > 0")
@@ -167,6 +198,7 @@ func NewDisk(config DiskConfig) *Disk {
 		closech: make(chan (Token)),
 		donech:  make(chan (Token)),
 		dirs:    make(map[id]string),
+		ssd:     ssd,
 	}
 
 	//TODO: this is a bit hacky
@@ -187,7 +219,7 @@ func (d *Disk) Start(wait int) {
 	d.startch <- Token{}
 }
 
-// File wraps an os.File object with a custom Close() command
+// File wraps an os.File object with a custom Close() command that signals to disk
 type File struct {
         *os.File
 	disk    *Disk
@@ -485,11 +517,11 @@ func Copy(dst io.Writer, src *File) (written int64, err error) {
 // Close process all pending requests and then closes the disk scheduler
 // and frees buffer memory.
 func (d *Disk) Close() {
-	// TODO: wait for pending
-	// close bufpool
+	// wait for pending jobs to finish
 	d.wg.Add(1)
 	d.closech <- Token{}
 	d.wg.Wait()
+	// close bufpool
 	if bufc != nil {
 		n, err := ClosePool()
 		// TODO: clean up debug logging

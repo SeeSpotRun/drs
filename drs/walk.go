@@ -54,6 +54,12 @@ type WalkOptions struct {
 	wg           sync.WaitGroup // waitgroup to signal end of walks
 }
 
+
+// id is a unique identifier for a file
+// TODO: windows flavour
+type id struct {
+	Dev uint64
+	Ino uint64
 }
 
 // Path implements the drs.Job interface
@@ -66,13 +72,7 @@ type Path struct {
 	opts   *WalkOptions
 }
 
-// id is a unique identifier for a file
-// TODO: windows flavour
-type id struct {
-	Dev uint64
-	Ino uint64
-}
-
+// process processes a path, sending results and scheduling recursion if appropriate
 func (p *Path) process(isHidden bool) {
 	defer p.opts.wg.Done()
 
@@ -81,6 +81,11 @@ func (p *Path) process(isHidden bool) {
 	if err != nil {
 		p.Report(err)
 		return
+	}
+
+	if p.Disk == nil {
+		id, _ := getID(p.Name, p.Info)
+		p.Disk = GetDisk(id.Dev, false /*TODO: test for SSD*/ )
 	}
 
 	if !p.Disk.ssd {
@@ -104,7 +109,7 @@ func (p *Path) process(isHidden bool) {
 			p.Send()
 		 }
 
-		if p.opts.MaxDepth <= 0 || p.Depth < p.opts.MaxDepth {
+		if !p.opts.NoRecurse && ( p.opts.MaxDepth <= 0 || p.Depth < p.opts.MaxDepth ){
 			p.opts.wg.Add(1)
 			// schedule path.Go() to recurse dir
 			p.Disk.Schedule(p, p.Name, p.Offset, Normal)
@@ -121,15 +126,15 @@ func (p *Path) process(isHidden bool) {
 }
 
 // Go recurses into a directory, sending any files found and recursing any directories
-func (p *Path) Go(f *File, err error) {
+func (p *Path) Go(dir *File, err error) {
 	defer p.opts.wg.Done()
 
 	if err != nil {
 		p.Report(err)
 		return
 	}
-	names, err := f.Readdirnames(-1)
-	f.Close()
+	names, err := dir.Readdirnames(-1)
+	dir.Close()
 	if err != nil {
 		p.Report(err)
 		return
@@ -156,12 +161,15 @@ func (p *Path) Go(f *File, err error) {
 	}
 }
 
+// Report sends erros to error channel
 func (p *Path) Report(e error) {
 	if p.opts.Errs != nil {
 		p.opts.Errs <- e
 	}
 }
 
+
+// Send sends path to results channel
 func (p *Path) Send() {
 	if p.opts.results != nil {
 		p.opts.results <- p
@@ -175,11 +183,8 @@ func (p *Path) Send() {
 //  ch := Walk(e, {"/foo", "/foo/bar"}, options, disk)
 // will only walk the files in /foo/bar once.
 // Errors are returned via errc (if provided).
-func Walk(
-	roots []string,
-	opts *WalkOptions,
-	disk *Disk, // TODO
-) <-chan *Path {
+// TODO: use filepath/Walk compatible callback instead of errc (need to make threadsafe)
+func Walk( roots []string, opts *WalkOptions) <-chan *Path {
 
 	// canonicalise root dirs, removing duplicate paths
 	rmap := make(map[string]bool)
@@ -203,7 +208,6 @@ func Walk(
 		path := &Path{
 			Name:  root,
 			Depth: 0,
-			Disk:  disk, // TODO
 			opts:  opts,
 		}
 		opts.wg.Add(1)
