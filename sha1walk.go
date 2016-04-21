@@ -34,20 +34,28 @@ package main
 import (
 	"crypto/sha1"
 	"fmt"
-	"github.com/SeeSpotRun/drs/drs"
 	"log"
 	"os"
 	"strings"
-	"time"
+	"sort"
+	"github.com/docopt/docopt-go"
+	"github.com/SeeSpotRun/drs/drs"
 )
 
 //////////////////////////////////////////////////////////////////
+
+type results []*job
+var res results
+// implements sort.Interface for sorting by increasing path.
+func (r results) Len() int           { return len(r) }
+func (r results) Swap(i, j int)      { r[i], r[j] = r[j], r[i] }
+func (r results) Less(i, j int) bool { return r[i].path < r[j].path }
 
 // job implements the drs.Job interface
 type job struct {
 	path   string
 	offset uint64
-	ssd    bool
+	hash   string
 }
 
 // Go opens the file, reads its contents, signals done, then finishes hashing the
@@ -66,60 +74,63 @@ func (j *job) Go(f *drs.File, err error) {
 		if !strings.HasSuffix(err.Error(), "is a directory") {
 			log.Printf("Failed hashing %s: %s", j.path, err)
 		}
-	} else if j.ssd {
-		fmt.Printf("%x %s\n", h.Sum(nil), j.path)
 	} else {
-		fmt.Printf("%x (%12d) %s\n", h.Sum(nil), j.offset, j.path)
+		j.hash = fmt.Sprintf("%x", h.Sum(nil))
+		res = append(res, j)
 	}
 }
 
 func main() {
-	// start timer...
-	t1 := time.Now()
-
 	// parse args:
-	usage := "Usage: sha1 --[hdd|ssd|aggressive] <files>..."
+	usage := `Usage:
+    sha1walk -h | --help
+    sha1walk [options] <path>...
+Options:
+  -h --help     Show this screen
+  --version     Show version
+  -r --recurse  Recurse paths if they are folders
+  --walkfirst   Finish walk before starting hashing
+  --hashfirst   Hash files as soon as they are found
+  --aggressive  Use more aggressive HDD scheduler settings
+  --sort        Sort results
+`
 
-	if len(os.Args) < 3 {
-		fmt.Println(usage)
-		return
+	args, _ := docopt.Parse(usage, os.Args[1:], true, "sums 0.1", false, true)
+
+	if args["--aggressive"] == true {
+		drs.HDD = drs.Aggressive
+	}
+	hashPriority := drs.Normal
+	if args["--hashfirst"] == true {
+		hashPriority = drs.High
+	} else if args["--walkfirst"] == true {
+		hashPriority = drs.Low
 	}
 
-	var diskconfig drs.DiskConfig
-	ssd := false
-	switch os.Args[1] {
-	case "--hdd":
-		diskconfig = drs.HDD
-	case "--aggressive":
-		diskconfig = drs.Aggressive
-	case "--ssd":
-		diskconfig = drs.SSD
-		ssd = true
-	default:
-		fmt.Println(usage)
-		return
-	}
-
-	// set up disk
-	disk := drs.NewDisk(diskconfig)
-	disk.Start(0)
-
+	walkopts := &drs.WalkOptions{Priority: drs.Normal, Errs: make(chan error)}
+	walkopts.NoRecurse = args["--recurse"] != true
+	paths := args["<path>"].([]string)
 	// error reporting during walk:
-	errc := make(chan error)
 	go func() {
-		for err := range errc {
+		for err := range walkopts.Errs {
 			log.Printf("Walk error: %s\n", err)
 		}
 	}()
 
-	walkopts := &drs.WalkOptions{Errs: errc}
-
-	for p := range drs.Walk(os.Args[2:], walkopts, disk) {
-		j := &job{path: p.Name, ssd: ssd, offset: p.Offset}
-		disk.Schedule(j, j.path, j.offset, drs.Low)
+	for p := range drs.Walk(paths, walkopts) {
+		j := &job{path: p.Name, offset: p.Offset}
+		// TODO
+		p.Disk.Schedule(j, j.path, j.offset, hashPriority)
 	}
 
-	disk.Close()
+	drs.CloseDisks()
 
-	log.Printf("Total time %d ms\n", time.Now().Sub(t1)/time.Millisecond)
+	if args["--sort"] == true {
+		sort.Sort(results(res))
+	}
+
+	for _, j := range res {
+		fmt.Printf("%s:  %s\n", j.hash, j.path)
+	}
+
 }
