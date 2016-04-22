@@ -63,21 +63,27 @@ func GetDisk(id uint64, ssd bool) *Disk {
 	}
 	d := NewDisk(ssd)
 	disks[id] = d
-	d.Start(0)
 	return d
 }
 
-// CloseDisks closes all disks
-func CloseDisks() {
+// Close closes all disks
+func Close() {
 	for _, d := range(disks) {
 		d.Close()
 	}
 }
 
-// WaitDisks waits until there are no unfinished scheduled jobs
-func WaitDisks() {
+// Wait waits until there are no unfinished scheduled jobs
+func Wait() {
 	for _, d := range(disks) {
 		d.Wait()
+	}
+}
+
+// Pause stops all disks from launching new jobs
+func Pause() {
+	for _, d := range(disks) {
+		d.Pause()
 	}
 }
 
@@ -144,6 +150,14 @@ func (t TokenReturn) Done() {
 	}
 }
 
+// controlMsg is used to send control messages to the disk scheduler
+type controlMsg int
+
+const (
+	start controlMsg = iota  // start or resume processing of jobs
+	wait                     // wait for all jobs to finish then signal wg.Done()
+	pause                    // don't start any more jobs
+)
 
 
 // A Disk schedules read operations for files.  It shoulds be created using NewDisk.  A call
@@ -161,16 +175,15 @@ func (t TokenReturn) Done() {
 //  wg.Wait()
 //  d.Close()
 type Disk struct {
-	reqch   chan *request   // read job requests
-	readch  TokenReturn     // signal that read job has finished reading and file has been closed
-	donech  TokenReturn     // signal that read job has finished
-	startch TokenReturn     // used by disk.Start() to signal start of reading
+	reqch   chan *request   // job requests
+	read    TokenReturn     // signal that read job has finished reading and file has been closed
+	process TokenReturn     // signal that read job has finished processing
+	control chan controlMsg // to send control messages to scheduler
 	wait    int             // how many pending reads to wait for before starting first read
-	closech TokenReturn     // to signal disk close
-	wg      sync.WaitGroup  // when closing disk, to wait for pending jobs to finish
+	wg      sync.WaitGroup  // to signal when all pending jobs finished
 	dirs    map[id]string   // used to check for path walk recursion
 	mx      sync.Mutex      // for access to dirs
-	ssd     bool
+	ssd     bool            // is the disk an SSD (or similar non-rotational media)
 }
 
 
@@ -201,11 +214,10 @@ func NewDisk(ssd bool) *Disk {
 	}
 
 	d := &Disk{
-		startch: make(TokenReturn),
-		reqch:   make(chan (*request)),
-		readch:  make(chan (Token), 10), // TODO: does buffer improve speed?
-		closech: make(chan (Token)),
-		donech:  make(chan (Token)),
+		control: make(chan controlMsg),
+		reqch:   make(chan *request),
+		read:  make(TokenReturn, 10), // TODO: does buffer improve speed?
+		process:  make(TokenReturn),
 		dirs:    make(map[id]string),
 		ssd:     ssd,
 	}
@@ -221,40 +233,56 @@ func NewDisk(ssd bool) *Disk {
 	return d
 }
 
-// Start needs to be called once in order to enable file data to start reading.
-// If wait > 0 then will wait until that many read requests have been registered before starting
-func (d *Disk) Start(wait int) {
-	d.wait = wait
-	d.startch <- Token{}
+// Start restarts a paused Disk
+func (d *Disk) Start() {
+	d.control <- start
 }
 
-// File wraps an os.File object with a custom Close() command that signals to disk
-type File struct {
-        *os.File
-	disk    *Disk
-        closed  bool
+// Pause prevents any additional jobs from being started
+func (d *Disk) Pause() {
+	d.control <- pause
 }
 
-func (f *File) Close() error {
-        if !f.closed {
-                f.closed = true
-		f.disk.readch <- Token{}
-                return f.File.Close()
-        }
-        return fmt.Errorf("Warning: attempt to close a closed file")
-}
-
-func (r *request) Do(d *Disk) {
-        f, e := os.Open(r.path)
-	fi := &File{ f, d, e != nil }
-	if e != nil {
-		// signal finished reading
-		fi.disk.readch <- Token{}
+// AddDir checks for the presence of a dir in d.dirs.  If notfound
+// then adds it and returns true, else returns false.
+func (d *Disk) AddDir(i id, path string) error {
+	d.mx.Lock()
+	defer d.mx.Unlock()
+	match, has_match := d.dirs[i]
+	if has_match {
+		return fmt.Errorf("Duplicate dir: %s is same as %s", path, match)
 	}
-	r.job.Go(fi, e)
-	d.donech.Done()
+	d.dirs[i] = path
+	return nil
 }
 
+// Schedule adds a job to the disk's queue.
+func (d *Disk) Schedule(j Job, path string, offset uint64, priority Priority) {
+	r := &request{j, path, offset, priority}
+	d.reqch <- r
+}
+
+// Wait waits until there are not unfinished or scheduled jobs.
+func (d *Disk) Wait() {
+	d.wg.Add(1)
+	d.control <- wait
+	d.wg.Wait()
+}
+
+// Close process all pending requests and then closes the disk scheduler
+// and frees buffer memory.
+func (d *Disk) Close() {
+	d.Wait()
+	// close bufpool
+	if bufc != nil {
+		n, err := ClosePool()
+		// TODO: clean up debug logging
+		log.Printf("Buffers used: %d", n)
+		if err != nil {
+			log.Println(err)
+		}
+	}
+}
 
 // scheduler manages job requests and tries to process jobs in disk order
 func (d *Disk) scheduler(config DiskConfig) {
@@ -262,33 +290,24 @@ func (d *Disk) scheduler(config DiskConfig) {
 	nReading := 0 // number jobs reading from disk
 	nJobs := 0    // number jobs (goroutines) still running
 	finishing := false
+	paused := false
 
 	var offset uint64 // estimate of current disk head position
 
 	alljobs := make(jobqueues, PriorityCount)
-	//for i:=0; i < int(PriorityCount); i++ {
-	//	alljobs = append(alljobs, &jobqueue{})
-	//}
-
-	started := false // whether reading has been started yet by disk.Start
 
 	release := func() {
-		if !started {
-			return
-		}
-		if d.wait > 0 && alljobs.Len() < d.wait {
-			// start signal received but not enough pending reads yet
-			return
-		}
-		d.wait = 0
 
 		if finishing && nJobs == 0 && alljobs.Len() == 0 {
 			finishing = false
 			d.wg.Done()
 		}
+		if paused {
+			return
+		}
 
 		for iq := range alljobs {
-			for alljobs[iq].Len() > 0 && nReading < config.Read+config.Window {
+			for nJobs < config.Process && nReading < config.Read+config.Window && alljobs[iq].Len() > 0 {
 
 				alljobs[iq].lazySort(config.Lazy)
 
@@ -358,56 +377,53 @@ sched:
 				break sched
 			}
 
-			// append to unsorted reqs:
+			// append job to queue and release pending jobs:
 			alljobs[r.priority].Add(r)
-
-			// launch this (or other pending) job(s) as appropriate
 			release()
 
-		case <-d.donech:
-			// a job's goroutine has finished reading; launch pending jobs as appropriate
+		case <-d.process:
+			// a job's goroutine has finished; launch pending jobs as appropriate
 			nJobs--
 			release()
 
-		case <-d.readch:
-			// a job has finished reading; launch pending jobs as appropriate
+		case <-d.read:
+			// a job's goroutine has finished reading; launch pending jobs as appropriate
 			nReading--
-			if nJobs < config.Process {
-				release()
-			}
-
-		case <-d.startch:
-			log.Println("Disk start; ssd:", d.ssd)
-			started = true
 			release()
 
-		case <-d.closech:
-			log.Println("Disk closing...")
-			finishing = true
+		case msg := <-d.control:
+			switch msg {
+			case start:
+				paused = false
+			case pause:
+				paused = true
+			case wait:
+				paused = false
+				finishing = true
+			}
 			release()
 		}
 	}
 
-	// all done!
-	// debug check that no pending jobs left behind:
-	if alljobs.Len() > 0 {
-		log.Printf("Unprocessed jobs: %d\n", alljobs.Len())
-	}
-
 }
 
-// AddDir checks for the presence of a dir in d.dirs.  If notfound
-// then adds it and returns true, else returns false.
-func (d *Disk) AddDir(i id, path string) error {
-	d.mx.Lock()
-	defer d.mx.Unlock()
-	match, has_match := d.dirs[i]
-	if has_match {
-		return fmt.Errorf("Duplicate dir: %s is same as %s", path, match)
-	}
-	d.dirs[i] = path
-	return nil
+// File wraps an os.File object with a custom Close() command that signals to disk
+type File struct {
+        *os.File
+	disk    *Disk
+        closed  bool
 }
+
+func (f *File) Close() error {
+        if !f.closed {
+                f.closed = true
+		f.disk.read.Done()
+                return f.File.Close()
+        }
+        return fmt.Errorf("Warning: attempt to close a closed file")
+}
+
+
 
 // Job is the interface for the calling routine to process files scheduled for reading.
 type Job interface {
@@ -437,11 +453,17 @@ type request struct {
 	priority  Priority
 }
 
-// Schedule adds a job to the disk's queue.
-func (d *Disk) Schedule(j Job, path string, offset uint64, priority Priority) {
-	r := &request{j, path, offset, priority}
-	d.reqch <- r
+func (r *request) Do(d *Disk) {
+        f, e := os.Open(r.path)
+	fi := &File{ f, d, e != nil }
+	if e != nil {
+		// signal finished reading
+		fi.disk.read.Done()
+	}
+	r.job.Go(fi, e)
+	d.process.Done()
 }
+
 
 //////////////////////////////////////////////////////////////////////
 // Copy
@@ -525,27 +547,6 @@ func Copy(dst io.Writer, src *File) (written int64, err error) {
 }
 
 
-// Wait waits until there are not unfinished or scheduled jobs.
-func (d *Disk) Wait() {
-	d.wg.Add(1)
-	d.closech <- Token{}
-	d.wg.Wait()
-}
-
-// Close process all pending requests and then closes the disk scheduler
-// and frees buffer memory.
-func (d *Disk) Close() {
-	d.Wait()
-	// close bufpool
-	if bufc != nil {
-		n, err := ClosePool()
-		// TODO: clean up debug logging
-		log.Printf("Buffers used: %d", n)
-		if err != nil {
-			log.Println(err)
-		}
-	}
-}
 
 ///////////////////////////////////////////////////////////////
 //
