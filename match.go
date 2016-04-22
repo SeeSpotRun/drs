@@ -341,6 +341,7 @@ non-rmlint options:
   --ssd=path             Identify path as belonging to an SSD
 tuning options:
   --aggressive           Use more aggressive HDD scheduler
+  --groupers=N           Use N grouper goroutines [default: 1]
 `
 
 	type options struct {
@@ -354,6 +355,7 @@ tuning options:
 		seelinks	bool
 		readbuf         int64
 		aggressive	bool
+		groupers        int
 		ssd		[]string
 		paths		[]string
 	}
@@ -448,17 +450,21 @@ tuning options:
 	}
 
 	sort.Sort(bysize(files))
-	
+
+	groupers := make([]*Grouper, opts.groupers)
+	for i:=0; i<opts.groupers; i++ {
+		groupers[i] = NewGrouper()
+	}
 	reporter := NewReporter()
 	reporter.wg.Add(len(files))
-	grouper := NewGrouper()
-	
+
+	//drs.Pause()
 	var g *Group
 	for i, f := range(files) {
 		if g == nil || f.size != g.files[0].size {
 			// file doesn't fit current group
 			g.unref()
-			g = NewGroup(f, reporter.reportch, grouper)
+			g = NewGroup(f, reporter.reportch, groupers[i % opts.groupers])
 		} else {
 			g.add(f)
 		}
@@ -467,8 +473,14 @@ tuning options:
 	g.unref()
 
 	runtime.GC()
-	
-	go grouper.group()
+
+	for _, g := range groupers {
+		go g.group()
+	}
+
+	//drs.Resume()
+
+	//go grouper.group()
 
 	// wait for all jobs to finish
 	drs.Wait()
