@@ -87,6 +87,14 @@ func Pause() {
 	}
 }
 
+// Resume enables all disks to launch new jobs
+func Resume() {
+	for _, d := range(disks) {
+		d.Resume()
+	}
+}
+
+
 
 type DiskConfig struct {
 	Read    int
@@ -233,14 +241,14 @@ func NewDisk(ssd bool) *Disk {
 	return d
 }
 
-// Start restarts a paused Disk
-func (d *Disk) Start() {
-	d.control <- start
-}
-
 // Pause prevents any additional jobs from being started
 func (d *Disk) Pause() {
 	d.control <- pause
+}
+
+// Resume restarts a paused disk
+func (d *Disk) Resume() {
+	d.control <- start
 }
 
 // AddDir checks for the presence of a dir in d.dirs.  If notfound
