@@ -8,7 +8,7 @@
 *
 *  drs is distributed in the hope that it will be useful,
 *  but WITHOUT ANY WARRANTY; without even the implied warranty of
-*  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+*  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	 See the
 *  GNU General Public License for more details.
 *
 *  You should have received a copy of the GNU General Public License
@@ -32,11 +32,14 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"fmt"
 )
 
 const winLongPathLimit = 259
 const winLongPathHack = "\\\\?\\" // workaround prefix for windows 260-character path limit
 
+// WalkOptions provides convenient commonly used filters for file walks.  The struct is designed
+// so that zero-value defaults gives a fairly typical walk configuration
 type WalkOptions struct {
 	SeeRootLinks bool  // if false, if root paths are symlinks they will be ignored
 	SeeLinks     bool  // if false, symlinks will be ignored (except root paths)
@@ -48,10 +51,10 @@ type WalkOptions struct {
 	NoRecurse    bool  // if false, walks passed root dirs recursively
 	OneDevice    bool  // if false, walk will cross filesystem boundaries TODO
 	MaxDepth     int   // if recursing dirs, limit depth (1 = files in root dirs; 0 = no limit).
-	Priority     Priority   // drs schedule priority for walk takss
-	Errs         chan error // optional channel to return walk errors; if nil then ignores errors
-	results      chan<- *Path  // channel to which to send results
-	wg           sync.WaitGroup // waitgroup to signal end of walks
+	Priority     Priority	// drs schedule priority for walk takss
+	Errs	     chan error // optional channel to return walk errors; if nil then ignores errors
+	results	     chan<- *Path  // channel to which to send results
+	wg	     sync.WaitGroup // waitgroup to signal end of walks
 }
 
 
@@ -68,8 +71,10 @@ type Path struct {
 	Offset uint64
 	Depth  int
 	Info   os.FileInfo
+	dev    uint64
 	Disk   *Disk
 	opts   *WalkOptions
+	parent *Path
 }
 
 // process processes a path, sending results and scheduling recursion if appropriate
@@ -81,6 +86,28 @@ func (p *Path) process(isHidden bool) {
 	if err != nil {
 		p.Report(err)
 		return
+	}
+
+	if p.Info.Mode() & os.ModeSymlink != 0 {
+		if !p.opts.SeeLinks {
+		return
+		}
+		if p.opts.FollowLinks {
+			p.Name, err = filepath.EvalSymlinks(unfixpath(p.Name))
+			if err != nil {
+				fmt.Println("Symlink error")
+				p.Report(err)
+				return
+			}
+			p.Name, err = fixpath(p.Name)
+			if err != nil {
+				fmt.Println("Symlink fixpath error")
+				p.Report(err)
+				return
+			}
+			p.Disk = nil
+			// TODO: test for encounter of file already walked?
+		}
 	}
 
 	if p.Disk == nil {
@@ -99,16 +126,29 @@ func (p *Path) process(isHidden bool) {
 		}
 
 		// map inode to prevent recursion and path doubles
-		id, _ := getID(p.Name, p.Info)
-		err := p.Disk.AddDir(id, p.Name)
+		id, err := getID(p.Name, p.Info)
+		if err != nil {
+			p.Report(fmt.Errorf("%s: %s", err, p.Name))
+			return
+		}
+
+		if p.parent != nil && p.parent.dev != id.Dev {
+			if p.opts.OneDevice {
+				p.Report(fmt.Errorf("Not recursing into %s because it is different filesystem", p.Name))
+				return
+			}
+			p.Disk = GetDisk(id.Dev, false /*TODO: test for SSD*/ )
+		}
+
+		// inode recursion check:
+		err = p.Disk.AddDir(id, p.Name)
 		if err != nil {
 			p.Report(err)
 			return
 		}
 		 if p.opts.ReturnDirs {
 			p.Send()
-		 }
-
+		}
 		if !p.opts.NoRecurse && ( p.opts.MaxDepth <= 0 || p.Depth < p.opts.MaxDepth ){
 			p.opts.wg.Add(1)
 			// schedule path.Go() to recurse dir
@@ -151,10 +191,11 @@ func (p *Path) Go(dir *File, err error) {
 		filename := filepath.Join(p.Name, name)
 		// TODO: check if not in roots
 		path := &Path{
-			Name:  filename,
-			Depth: p.Depth + 1,
-			Disk:  p.Disk, // TODO
-			opts:  p.opts,
+			Name:	filename,
+			Depth:	p.Depth + 1,
+			Disk:	p.Disk, // note: may get updated by p.process()
+			opts:	p.opts,
+			parent: p,
 		}
 		p.opts.wg.Add(1)
 		go path.process(strings.HasPrefix(name, "."))
