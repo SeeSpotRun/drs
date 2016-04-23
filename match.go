@@ -212,33 +212,13 @@ func NewGrouper() *Grouper {
 	return &Grouper { make(chan *File, 10) }
 }
 
-// mapable encodes []byte b to a uniquely mapable string.
-// Since strings can't contain 0 values it maps byte values as follows:
-// 0: {1, 1}
-// 1: {1, 2}
-// Encoding efficiency should average 99.2% (vs hex encoding 50%)
-func mapable(b[]byte) string {
-	j := 0 // start of current subslice
-	result := ""
-	for i := 0; i < len(b); i++ {
-		if b[i] <= 1 {
-			result = result + string(b[j:i]) + string(1) + string(b[i] + 1)
-			j = i + 1
-		}
-	}
-	return result + string(b[j:])
-}
-
 func (gr *Grouper) group() {
 	for f := range gr.filech {
 		g := f.group
 		if f.err != nil {
 			g.reportch <- &Group{files: []*File {f}, status: ReadError  }
 		} else {
-			h := mapable( f.hash.Sum(nil) ) // []byte is not mapable but string is
-			if fmt.Sprintf("%x", h) != fmt.Sprintf("%x", f.hash.Sum(nil)) {
-				fmt.Printf("%x\n%x\n", f.hash.Sum(nil), h)
-			}
+			h := string(f.hash.Sum(nil)) // []byte is not mapable but string is
 			c, ok := g.children[h]
 			if !ok {
 				// create new group
