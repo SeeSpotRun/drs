@@ -26,8 +26,10 @@ package drs
 
 import (
 	"github.com/SeeSpotRun/go-fibmap" // forked from https://github.com/frostschutz/go-fibmap
-	"os"
 	// TODO: pull request to merge changes
+	"fmt"
+	"os"
+	"syscall"
 )
 
 // offsetof returns the physical offset (relative to disk start) of
@@ -48,4 +50,12 @@ func offsetof(f *os.File, logical uint64) (uint64, error) {
 // not used in linux
 func bps(path string) uint64 {
 	return 1
+}
+
+func getID(path string, info os.FileInfo) (id, error) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return id{}, fmt.Errorf("Can't get file id for %s", path)
+	}
+	return id{stat.Dev, stat.Ino}, nil
 }
