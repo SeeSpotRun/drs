@@ -34,11 +34,11 @@ package main
 import (
 	"crypto/sha1"
 	"fmt"
+	"github.com/SeeSpotRun/drs/drs"
+	"github.com/docopt/docopt-go"
 	"log"
 	"os"
 	"sort"
-	"github.com/docopt/docopt-go"
-	"github.com/SeeSpotRun/drs/drs"
 )
 
 //////////////////////////////////////////////////////////////////
@@ -77,12 +77,13 @@ func (j *job) Go(f *drs.File, err error) {
 }
 
 type results []*job
+
 var res results
+
 // implements sort.Interface for sorting by increasing path.
 func (r results) Len() int           { return len(r) }
 func (r results) Swap(i, j int)      { r[i], r[j] = r[j], r[i] }
 func (r results) Less(i, j int) bool { return r[i].path < r[j].path }
-
 
 func main() {
 
@@ -121,8 +122,8 @@ Options:
 
 	// configure walk options
 	walkopts := &drs.WalkOptions{
-		Priority: drs.Normal,
-		Errs: make(chan error),
+		Priority:  drs.Normal,
+		Errs:      make(chan error),
 		NoRecurse: args["--recurse"] != true,
 	}
 

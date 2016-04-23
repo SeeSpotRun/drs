@@ -34,50 +34,49 @@ package main
 
 import (
 	"crypto"
+	_ "crypto/md5"
 	_ "crypto/sha1"
 	_ "crypto/sha256"
 	_ "crypto/sha512"
-	_ "crypto/md5"
-	"hash"
 	"fmt"
-	"log"
-	"os"
-	"sort"
-	"sync"
-	"runtime"
-	"strings"
-	"github.com/docopt/docopt-go"
 	"github.com/SeeSpotRun/coerce"
 	"github.com/SeeSpotRun/drs/drs"
+	"github.com/docopt/docopt-go"
+	"hash"
+	"log"
+	"os"
+	"runtime"
+	"sort"
+	"strings"
+	"sync"
 )
 
 // tuning parameters
 const (
-	bufSize = 32 * 1024        // read buffer size
-	firstN = int64(bufSize)    // how many bytes in first hash increment
-	mult   = int64(7)          // acceleration factor
-	maxN   = int64(1) << 27    // maximum increment size = 128M
-	defaultHash = crypto.SHA1  // note: if change this then also change in usage string
+	bufSize     = 32 * 1024      // read buffer size
+	firstN      = int64(bufSize) // how many bytes in first hash increment
+	mult        = int64(7)       // acceleration factor
+	maxN        = int64(1) << 27 // maximum increment size = 128M
+	defaultHash = crypto.SHA1    // note: if change this then also change in usage string
 )
 
 //////////////////////////////////////////////////////////////////
 
 // File implements the drs.Job interface
 type File struct {
-	path     string
-	size     uint64
-	hashed   uint64
-	offset   uint64
-	hash     hash.Hash
-	disk     *drs.Disk
-	group    *Group
-	err      error
+	path   string
+	size   uint64
+	hashed uint64
+	offset uint64
+	hash   hash.Hash
+	disk   *drs.Disk
+	group  *Group
+	err    error
 }
 
 func (f *File) Schedule() {
 	f.disk.Schedule(f, f.path, f.offset, drs.Normal)
 }
-
 
 // Go hashes the file contents and adds the job to results[]
 func (f *File) Go(fd *drs.File, err error) {
@@ -94,7 +93,7 @@ func (f *File) Go(fd *drs.File, err error) {
 			}
 		}
 
-		if uint64(n) + f.hashed > f.size {
+		if uint64(n)+f.hashed > f.size {
 			n = int64(f.size - f.hashed)
 		}
 
@@ -124,16 +123,16 @@ const (
 
 type Group struct {
 	status   int
-	refs     int      // reference count (1 for incoming channel and 1 for each pending hash)
+	refs     int // reference count (1 for incoming channel and 1 for each pending hash)
 	children map[string]*Group
 	files    []*File
-	reportch chan <- *Group
+	reportch chan<- *Group
 	grouper  *Grouper
 }
 
-func NewGroup(f *File, reportch chan <- *Group, grouper *Grouper) *Group {
+func NewGroup(f *File, reportch chan<- *Group, grouper *Grouper) *Group {
 	g := &Group{
-		refs: 1,
+		refs:     1,
 		children: make(map[string]*Group, 1),
 		reportch: reportch,
 		grouper:  grouper,
@@ -149,6 +148,7 @@ func (g *Group) qualifies() bool {
 func (g *Group) isFinal() bool {
 	return g.files[0].isFinal()
 }
+
 type Grouper struct {
 	filech chan *File
 }
@@ -207,16 +207,15 @@ func (g *Group) unref() {
 	g.reportch <- g
 }
 
-
 func NewGrouper() *Grouper {
-	return &Grouper { make(chan *File, 10) }
+	return &Grouper{make(chan *File, 10)}
 }
 
 func (gr *Grouper) group() {
 	for f := range gr.filech {
 		g := f.group
 		if f.err != nil {
-			g.reportch <- &Group{files: []*File {f}, status: ReadError  }
+			g.reportch <- &Group{files: []*File{f}, status: ReadError}
 		} else {
 			h := string(f.hash.Sum(nil)) // []byte is not mapable but string is
 			c, ok := g.children[h]
@@ -232,16 +231,16 @@ func (gr *Grouper) group() {
 }
 
 type Reporter struct {
-	reportch   chan *Group
-	wg         sync.WaitGroup
-	dupes      int
-	originals  int
-	wasted     uint64
+	reportch  chan *Group
+	wg        sync.WaitGroup
+	dupes     int
+	originals int
+	wasted    uint64
 }
 
 type reporter func(r *Reporter, g *Group)
 
-func report_unique(r *Reporter, g *Group) { }
+func report_unique(r *Reporter, g *Group) {}
 
 func report_hashing(r *Reporter, g *Group) {
 	panic("Report on hashing group")
@@ -251,32 +250,32 @@ func report_error(r *Reporter, g *Group) {
 	if len(g.files) != 1 {
 		panic("Report read error with group len > 1")
 	}
-	fmt.Printf("Read Error: %s\n", g.files[0].err)
+	log.Printf("Read Error: %s\n", g.files[0].err)
 }
 
 func report_dupes(r *Reporter, g *Group) {
-	fmt.Printf("Duplicates (size %d, hash %x):\n", g.files[0].size, g.files[0].hash.Sum(nil))
+	fmt.Printf("\n") //Duplicates (size %d, hash %x):\n", g.files[0].size, g.files[0].hash.Sum(nil))
 	for _, f := range g.files {
 		fmt.Println(f.path)
 		if f.err != nil {
 			panic("Error on duplicate: " + f.err.Error())
 		}
 	}
-	r.originals ++
+	r.originals++
 	r.dupes += len(g.files) - 1
-	r.wasted += g.files[0].size * uint64 (len(g.files) - 1)
+	r.wasted += g.files[0].size * uint64(len(g.files)-1)
 }
 
 func NewReporter() *Reporter {
 
-	r := &Reporter {reportch: make(chan *Group, 10) }
+	r := &Reporter{reportch: make(chan *Group, 10)}
 
 	go func() {
-		var reporters = []reporter {
-			report_unique,   // Dormant
-			report_hashing,  // Hashing
-			report_error,    // ReadError
-			report_dupes,    // Duplicates
+		var reporters = []reporter{
+			report_unique,  // Dormant
+			report_hashing, // Hashing
+			report_error,   // ReadError
+			report_dupes,   // Duplicates
 		}
 		for g := range r.reportch {
 			reporters[g.status](r, g)
@@ -291,11 +290,11 @@ func NewReporter() *Reporter {
 
 // bysize implements sort.Interface()
 type bysize []*File
+
 // implements sort.Interface for sorting by increasing path.
 func (b bysize) Len() int           { return len(b) }
 func (b bysize) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
 func (b bysize) Less(i, j int) bool { return b[i].size < b[j].size }
-
 
 func main() {
 
@@ -325,21 +324,20 @@ tuning options:
 `
 
 	type options struct {
-		maxDepth	int
-		minsize		int64
-		maxsize		int64
-		algorithm	string
-		hidden		bool
-		followlinks	bool
-		xdev		bool
-		seelinks	bool
-		readbuf         int64
-		aggressive	bool
-		groupers        int
-		ssd		[]string
-		paths		[]string
+		maxDepth    int
+		minsize     int64
+		maxsize     int64
+		algorithm   string
+		hidden      bool
+		followlinks bool
+		xdev        bool
+		seelinks    bool
+		readbuf     int64
+		aggressive  bool
+		groupers    int
+		ssd         []string
+		paths       []string
 	}
-
 
 	args, _ := docopt.Parse(usage, os.Args[1:], true, "sums 0.1", false, true)
 
@@ -372,19 +370,18 @@ tuning options:
 		drs.HDD = drs.Aggressive
 	}
 
-	drs.InitPool(bufSize, int( 1 + (opts.readbuf - 1) / bufSize ) )
-
+	drs.InitPool(bufSize, int(1+(opts.readbuf-1)/bufSize))
 
 	// configure walk options
 	walkopts := &drs.WalkOptions{
-		Priority: drs.Normal,
-		Errs: make(chan error),
-		MaxDepth: opts.maxDepth + 1,
-                HiddenFiles: opts.hidden,
-                HiddenDirs: opts.hidden,
-		SeeLinks: opts.seelinks || opts.followlinks,
-                FollowLinks: opts.followlinks,
-		OneDevice: opts.xdev,
+		Priority:    drs.Normal,
+		Errs:        make(chan error),
+		MaxDepth:    opts.maxDepth + 1,
+		HiddenFiles: opts.hidden,
+		HiddenDirs:  opts.hidden,
+		SeeLinks:    opts.seelinks || opts.followlinks,
+		FollowLinks: opts.followlinks,
+		OneDevice:   opts.xdev,
 	}
 
 	// error reporting during walk:
@@ -432,7 +429,7 @@ tuning options:
 	sort.Sort(bysize(files))
 
 	groupers := make([]*Grouper, opts.groupers)
-	for i:=0; i<opts.groupers; i++ {
+	for i := 0; i < opts.groupers; i++ {
 		groupers[i] = NewGrouper()
 	}
 	reporter := NewReporter()
@@ -440,11 +437,11 @@ tuning options:
 
 	//drs.Pause()
 	var g *Group
-	for i, f := range(files) {
+	for i, f := range files {
 		if g == nil || f.size != g.files[0].size {
 			// file doesn't fit current group
 			g.unref()
-			g = NewGroup(f, reporter.reportch, groupers[i % opts.groupers])
+			g = NewGroup(f, reporter.reportch, groupers[i%opts.groupers])
 		} else {
 			g.add(f)
 		}
@@ -467,8 +464,7 @@ tuning options:
 
 	// wait for printout to finish
 	reporter.wg.Wait()
-	fmt.Printf("Total %d duplicates of %d originals; total wasted bytes: %.2fGB\n", reporter.dupes, reporter.originals, float64(reporter.wasted) / 1024 / 1024 / 1024)
+	fmt.Printf("Total %d duplicates of %d originals; total wasted bytes: %.2fGB\n", reporter.dupes, reporter.originals, float64(reporter.wasted)/1024/1024/1024)
 
 	// TODO: tidy up
 }
-

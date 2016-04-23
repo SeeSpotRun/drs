@@ -41,18 +41,17 @@ package drs
  */
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"os"
 	"runtime"
 	"sort"
 	"sync"
-	"fmt"
 )
 
 var disks = make(map[uint64]*Disk)
-var mx    sync.Mutex
-
+var mx sync.Mutex
 
 // GetDisk gets the disk corresponding to a diskID, creating one if necessary
 func GetDisk(id uint64, ssd bool) *Disk {
@@ -68,33 +67,31 @@ func GetDisk(id uint64, ssd bool) *Disk {
 
 // Close closes all disks
 func Close() {
-	for _, d := range(disks) {
+	for _, d := range disks {
 		d.Close()
 	}
 }
 
 // Wait waits until there are no unfinished scheduled jobs
 func Wait() {
-	for _, d := range(disks) {
+	for _, d := range disks {
 		d.Wait()
 	}
 }
 
 // Pause stops all disks from launching new jobs
 func Pause() {
-	for _, d := range(disks) {
+	for _, d := range disks {
 		d.Pause()
 	}
 }
 
 // Resume enables all disks to launch new jobs
 func Resume() {
-	for _, d := range(disks) {
+	for _, d := range disks {
 		d.Resume()
 	}
 }
-
-
 
 type DiskConfig struct {
 	Read    int
@@ -162,11 +159,10 @@ func (t TokenReturn) Done() {
 type controlMsg int
 
 const (
-	start controlMsg = iota  // start or resume processing of jobs
-	wait                     // wait for all jobs to finish then signal wg.Done()
-	pause                    // don't start any more jobs
+	start controlMsg = iota // start or resume processing of jobs
+	wait                    // wait for all jobs to finish then signal wg.Done()
+	pause                   // don't start any more jobs
 )
-
 
 // A Disk schedules read operations for files.  It shoulds be created using NewDisk.  A call
 // to Disk.Start() is required before the disk will allow associated files to start
@@ -193,8 +189,6 @@ type Disk struct {
 	mx      sync.Mutex      // for access to dirs
 	ssd     bool            // is the disk an SSD (or similar non-rotational media)
 }
-
-
 
 // NewDisk creates a new disk object to schedule read operations in order of increasing
 // physical offset on the disk.
@@ -224,8 +218,8 @@ func NewDisk(ssd bool) *Disk {
 	d := &Disk{
 		control: make(chan controlMsg),
 		reqch:   make(chan *request),
-		read:  make(TokenReturn, 10), // TODO: does buffer improve speed?
-		process:  make(TokenReturn),
+		read:    make(TokenReturn, 10), // TODO: does buffer improve speed?
+		process: make(TokenReturn),
 		dirs:    make(map[id]string),
 		ssd:     ssd,
 	}
@@ -339,7 +333,7 @@ func (d *Disk) scheduler(config DiskConfig) {
 					if nReading <= config.Read {
 						offset = r.offset
 					}
-                                        go r.Do(d)
+					go r.Do(d)
 				}
 
 				// gap returns the seek gap from current head position to file i
@@ -417,21 +411,19 @@ sched:
 
 // File wraps an os.File object with a custom Close() command that signals to disk
 type File struct {
-        *os.File
-	disk    *Disk
-        closed  bool
+	*os.File
+	disk   *Disk
+	closed bool
 }
 
 func (f *File) Close() error {
-        if !f.closed {
-                f.closed = true
+	if !f.closed {
+		f.closed = true
 		f.disk.read.Done()
-                return f.File.Close()
-        }
-        return fmt.Errorf("Warning: attempt to close a closed file")
+		return f.File.Close()
+	}
+	return fmt.Errorf("Warning: attempt to close a closed file")
 }
-
-
 
 // Job is the interface for the calling routine to process files scheduled for reading.
 type Job interface {
@@ -455,15 +447,15 @@ const (
 
 // request is used by drs to communicate with the scheduler goroutine
 type request struct {
-	job       Job
-        path      string
-	offset    uint64
-	priority  Priority
+	job      Job
+	path     string
+	offset   uint64
+	priority Priority
 }
 
 func (r *request) Do(d *Disk) {
-        f, e := os.Open(r.path)
-	fi := &File{ f, d, e != nil }
+	f, e := os.Open(r.path)
+	fi := &File{f, d, e != nil}
 	if e != nil {
 		// signal finished reading
 		fi.disk.read.Done()
@@ -471,7 +463,6 @@ func (r *request) Do(d *Disk) {
 	r.job.Go(fi, e)
 	d.process.Done()
 }
-
 
 //////////////////////////////////////////////////////////////////////
 // Copy
@@ -553,8 +544,6 @@ func Copy(dst io.Writer, src *File) (written int64, err error) {
 
 	return CopyN(dst, src, maxInt64)
 }
-
-
 
 ///////////////////////////////////////////////////////////////
 //

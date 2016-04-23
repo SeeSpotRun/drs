@@ -27,12 +27,12 @@
 package drs
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
-	"fmt"
 )
 
 const winLongPathLimit = 259
@@ -41,22 +41,21 @@ const winLongPathHack = "\\\\?\\" // workaround prefix for windows 260-character
 // WalkOptions provides convenient commonly used filters for file walks.  The struct is designed
 // so that zero-value defaults gives a fairly typical walk configuration
 type WalkOptions struct {
-	SeeRootLinks bool  // if false, if root paths are symlinks they will be ignored
-	SeeLinks     bool  // if false, symlinks will be ignored (except root paths)
-	FollowLinks  bool  // if false, walk returns symlinks as symlinks; if true it returns their targets
-	SeeDotFiles  bool  // if false, ignores "." and ".." entries // TODO:
-	HiddenDirs   bool  // if false, won't descend into folders starting with '.'
-	HiddenFiles  bool  // if false, won't return files starting with '.'
-	ReturnDirs   bool  // if false, doesn't return dir paths
-	NoRecurse    bool  // if false, walks passed root dirs recursively
-	OneDevice    bool  // if false, walk will cross filesystem boundaries TODO
-	MaxDepth     int   // if recursing dirs, limit depth (1 = files in root dirs; 0 = no limit).
-	Priority     Priority	// drs schedule priority for walk takss
-	Errs	     chan error // optional channel to return walk errors; if nil then ignores errors
-	results	     chan<- *Path  // channel to which to send results
-	wg	     sync.WaitGroup // waitgroup to signal end of walks
+	SeeRootLinks bool           // if false, if root paths are symlinks they will be ignored
+	SeeLinks     bool           // if false, symlinks will be ignored (except root paths)
+	FollowLinks  bool           // if false, walk returns symlinks as symlinks; if true it returns their targets
+	SeeDotFiles  bool           // if false, ignores "." and ".." entries // TODO:
+	HiddenDirs   bool           // if false, won't descend into folders starting with '.'
+	HiddenFiles  bool           // if false, won't return files starting with '.'
+	ReturnDirs   bool           // if false, doesn't return dir paths
+	NoRecurse    bool           // if false, walks passed root dirs recursively
+	OneDevice    bool           // if false, walk will cross filesystem boundaries TODO
+	MaxDepth     int            // if recursing dirs, limit depth (1 = files in root dirs; 0 = no limit).
+	Priority     Priority       // drs schedule priority for walk takss
+	Errs         chan error     // optional channel to return walk errors; if nil then ignores errors
+	results      chan<- *Path   // channel to which to send results
+	wg           sync.WaitGroup // waitgroup to signal end of walks
 }
-
 
 // id is a unique identifier for a file
 // TODO: windows flavour
@@ -88,9 +87,9 @@ func (p *Path) process(isHidden bool) {
 		return
 	}
 
-	if p.Info.Mode() & os.ModeSymlink != 0 {
+	if p.Info.Mode()&os.ModeSymlink != 0 {
 		if !p.opts.SeeLinks {
-		return
+			return
 		}
 		if p.opts.FollowLinks {
 			p.Name, err = filepath.EvalSymlinks(unfixpath(p.Name))
@@ -112,7 +111,7 @@ func (p *Path) process(isHidden bool) {
 
 	if p.Disk == nil {
 		id, _ := getID(p.Name, p.Info)
-		p.Disk = GetDisk(id.Dev, false /*TODO: test for SSD*/ )
+		p.Disk = GetDisk(id.Dev, false /*TODO: test for SSD*/)
 	}
 
 	if !p.Disk.ssd {
@@ -137,7 +136,7 @@ func (p *Path) process(isHidden bool) {
 				p.Report(fmt.Errorf("Not recursing into %s because it is different filesystem", p.Name))
 				return
 			}
-			p.Disk = GetDisk(id.Dev, false /*TODO: test for SSD*/ )
+			p.Disk = GetDisk(id.Dev, false /*TODO: test for SSD*/)
 		}
 
 		// inode recursion check:
@@ -146,10 +145,10 @@ func (p *Path) process(isHidden bool) {
 			p.Report(err)
 			return
 		}
-		 if p.opts.ReturnDirs {
+		if p.opts.ReturnDirs {
 			p.Send()
 		}
-		if !p.opts.NoRecurse && ( p.opts.MaxDepth <= 0 || p.Depth < p.opts.MaxDepth ){
+		if !p.opts.NoRecurse && (p.opts.MaxDepth <= 0 || p.Depth < p.opts.MaxDepth) {
 			p.opts.wg.Add(1)
 			// schedule path.Go() to recurse dir
 			p.Disk.Schedule(p, p.Name, p.Offset, Normal)
@@ -191,10 +190,10 @@ func (p *Path) Go(dir *File, err error) {
 		filename := filepath.Join(p.Name, name)
 		// TODO: check if not in roots
 		path := &Path{
-			Name:	filename,
-			Depth:	p.Depth + 1,
-			Disk:	p.Disk, // note: may get updated by p.process()
-			opts:	p.opts,
+			Name:   filename,
+			Depth:  p.Depth + 1,
+			Disk:   p.Disk, // note: may get updated by p.process()
+			opts:   p.opts,
 			parent: p,
 		}
 		p.opts.wg.Add(1)
@@ -208,7 +207,6 @@ func (p *Path) Report(e error) {
 		p.opts.Errs <- e
 	}
 }
-
 
 // Send sends path to results channel
 func (p *Path) Send() {
@@ -225,7 +223,7 @@ func (p *Path) Send() {
 // will only walk the files in /foo/bar once.
 // Errors are returned via errc (if provided).
 // TODO: use filepath/Walk compatible callback instead of errc (need to make threadsafe)
-func Walk( roots []string, opts *WalkOptions) <-chan *Path {
+func Walk(roots []string, opts *WalkOptions) <-chan *Path {
 
 	// canonicalise root dirs, removing duplicate paths
 	rmap := make(map[string]bool)
@@ -265,13 +263,13 @@ func Walk( roots []string, opts *WalkOptions) <-chan *Path {
 }
 
 func RegisterSSDs(roots []string) error {
-	for _, r:= range roots {
+	for _, r := range roots {
 		info, err := os.Lstat(r)
 		if err != nil {
 			return err
 		}
 		id, _ := getID(r, info)
-		GetDisk( id.Dev, true )
+		GetDisk(id.Dev, true)
 	}
 	return nil
 }

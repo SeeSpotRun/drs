@@ -14,10 +14,10 @@ import (
 
 const (
 	fsctl_get_retrieval_pointers   uint32 = 0x00090073 //https://msdn.microsoft.com/en-us/library/cc246805.aspx
-	extentsize			      = 16	   // sizeof(Extent)
-	retrieval_pointers_buffer_size	      = 12	   // sizeof(Retrieval_pointers_buffer)
-	starting_vcn_input_buffer_size uint32 = 8	   // sizeof(LARGE_INTEGER)
-	failbps				      = 4096	   // guess value to use if syscall fails
+	extentsize                            = 16         // sizeof(Extent)
+	retrieval_pointers_buffer_size        = 12         // sizeof(Retrieval_pointers_buffer)
+	starting_vcn_input_buffer_size uint32 = 8          // sizeof(LARGE_INTEGER)
+	failbps                               = 4096       // guess value to use if syscall fails
 )
 
 // disks maps volume names to bytes-per-sector
@@ -41,7 +41,7 @@ func (i *large_integer) set(v int64) {
 
 type extent struct {
 	nextvcn large_integer
-	lcn	large_integer
+	lcn     large_integer
 }
 
 type retrieval_pointers_buffer struct {
@@ -76,11 +76,11 @@ func offsetof(f *os.File, logical uint64) (uint64, error) {
 	err := syscall.DeviceIoControl(fd,
 		fsctl_get_retrieval_pointers,
 		(*byte)(unsafe.Pointer(&startingvcn)), // A pointer to the input buffer, a STARTING_VCN_INPUT_BUFFER structure. (LPVOID)
-		starting_vcn_input_buffer_size,	       // The size of the input buffer, in bytes. (DWORD)
-		(*byte)(ptr),			       // A pointer to the output buffer, a RETRIEVAL_POINTERS_BUFFER variably sized structure (LPVOID)
-		nOutBufferSize,			       // The size of the output buffer, in bytes. (DWORD)
-		&bytesreturned,			       // A pointer to a variable that receives the size of the data stored in the output buffer, in bytes. (LPDWORD)
-		nil)				       // lpOverlapped	//A pointer to an OVERLAPPED structure; if fd is opened without specifying FILE_FLAG_OVERLAPPED, lpOverlapped is ignored.(LPOVERLAPPED)
+		starting_vcn_input_buffer_size,        // The size of the input buffer, in bytes. (DWORD)
+		(*byte)(ptr),                          // A pointer to the output buffer, a RETRIEVAL_POINTERS_BUFFER variably sized structure (LPVOID)
+		nOutBufferSize,                        // The size of the output buffer, in bytes. (DWORD)
+		&bytesreturned,                        // A pointer to a variable that receives the size of the data stored in the output buffer, in bytes. (LPDWORD)
+		nil)                                   // lpOverlapped	//A pointer to an OVERLAPPED structure; if fd is opened without specifying FILE_FLAG_OVERLAPPED, lpOverlapped is ignored.(LPOVERLAPPED)
 
 	if err != nil && err.Error() != "More data is available." {
 		return 0, err
@@ -151,6 +151,6 @@ func getID(path string, info os.FileInfo) (id, error) {
 		return id, err
 	}
 	id.Dev = uint64(i.VolumeSerialNumber)
-	id.Ino = uint64(i.FileIndexHigh) << 32 | uint64(i.FileIndexLow)
+	id.Ino = uint64(i.FileIndexHigh)<<32 | uint64(i.FileIndexLow)
 	return id, nil
 }
