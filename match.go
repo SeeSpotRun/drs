@@ -216,6 +216,11 @@ func (gr *Grouper) group() {
 		g := f.group
 		if f.err != nil {
 			g.reportch <- &Group{files: []*File{f}, status: ReadError}
+		} else if f.path == "" {
+			// unref
+		} else if f.hashed == 0 {
+			g.add(f)
+			continue
 		} else {
 			h := string(f.hash.Sum(nil)) // []byte is not mapable but string is
 			c, ok := g.children[h]
@@ -431,33 +436,30 @@ tuning options:
 	groupers := make([]*Grouper, opts.groupers)
 	for i := 0; i < opts.groupers; i++ {
 		groupers[i] = NewGrouper()
+		go groupers[i].group()
 	}
 	reporter := NewReporter()
 	reporter.wg.Add(len(files))
 
-	//drs.Pause()
 	var g *Group
 	for i, f := range files {
 		if g == nil || f.size != g.files[0].size {
 			// file doesn't fit current group
-			g.unref()
+			if g != nil {
+				g.grouper.filech <- &File{group: g}
+			}
 			g = NewGroup(f, reporter.reportch, groupers[i%opts.groupers])
 		} else {
-			g.add(f)
+			f.group = g
+			g.grouper.filech <- f
 		}
 	}
 	// unref final group
-	g.unref()
+	g.grouper.filech <- &File{group: g}
 
+
+	files = nil
 	runtime.GC()
-
-	for _, g := range groupers {
-		go g.group()
-	}
-
-	//drs.Resume()
-
-	//go grouper.group()
 
 	// wait for all jobs to finish
 	drs.Wait()
